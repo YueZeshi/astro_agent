@@ -1,0 +1,8 @@
+# Disable end-of-line translation repo-wide: store and check out bytes exactly as-is.
+#
+# harness/ is a verbatim copy of the official starter kit, and its scenario files are
+# SHA-256 pinned by scenario_manifest.json. The platform only re-scores identically while our
+# copies stay byte-identical, but Windows core.autocrlf would silently rewrite their LF
+# endings on checkout. Files in this repo are authored with LF, so "no conversion" also keeps
+# our own sources consistent without a second rule to maintain.
+* -text

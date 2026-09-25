@@ -1,0 +1,39 @@
+# --- experiment output: everything under runs/ is regenerable --------------
+runs/*
+!runs/.gitkeep
+# the official default output dir, wherever it lands
+run_output/
+*_output/
+
+# --- secrets: a model key must never be committed --------------------------
+.env
+agent/.env
+*.env
+!.env.example
+
+# --- python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+.python-version
+
+# --- tooling / editor ------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- local research scratch: downloaded kit zip, unofficial scenario pulls ---
+.ref/
+*.zip
+.ipynb_checkpoints/
+
+# --- large replay pages anywhere (regenerable from decisions.csv) ----------
+**/decision_replay.html
+
+# NOTE: submissions/*.csv is deliberately NOT ignored — accepted results are a
+# deliverable. Re-score them with `python scripts/ao.py score --decisions <file>`.

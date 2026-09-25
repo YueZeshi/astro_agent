@@ -35,6 +35,14 @@ python scripts/ao.py select my-v1 && python scripts/ao.py run --scenario dev-ref
 | 官方 `reference` 示范 | demo-week 上与 P0 **逐位相同**（5,909.099093）—— 练习场景不是拉开差距的地方 |
 | 平台提交 | 尚无（榜单目前只有 reference 基线，无人类提交） |
 
+**最重要的一条实测**：`choose_action` 在 dev-reference 全场只被问 **91 次**（7,943 个时隙里其余
+7,852 个由 `_finalize` 直接返回 wait，不问策略）。所以这不是「每 15 分钟做一个选择」的问题，
+而是 **「把 ~90 个可行动名额分给谁」** 的问题 —— 而且等待**不产生任何费用**
+（`wait_seconds.explicit == unavailable`，`avoidable_wait` 从未计费）。
+据此已否证两个直觉方向（「优先补分区配额」= `quota-floor`，mine-s7 −1.77 / demo-week +24.64，
+块数与罚分不变；「天况不好就等」= 官方实测 −1,700），详见
+[strategy-design.md](docs/strategy-design.md) 与 [LEDGER.md](submissions/LEDGER.md)。
+
 ## 仓库结构
 
 ```

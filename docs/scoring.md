@@ -27,8 +27,12 @@ bonus    = base × program_bonus[program]        # 仅当 program == band
 - 月相：`lunar_quality_factor ∈ (0,1]`，`angular_decay_scale_deg = 35`，`maximum_penalty = 0.75`，
   月亮在地平线下时为 1。
 - `anomaly_factor`：隐藏标签乘数，`nova ×1.5`、`reddening ×0.8`，可叠加。**只在正式规则里存在。**
-- `instrument_efficiency` **从不进快照**（`_public_weather` 主动剥掉）。所以
-  `实现分 / 预览分` 的比值就是隔离出仪器侧信号的探针 —— 这是故障上报判据的基础。
+- `instrument_efficiency` 在 **v3（正式规则）里被剥掉**：`_public_weather` 不把它放进
+  `effective_weather`，也不放进 `current_site_weather`（本机实测）。但 **v2 练习场景的
+  `current_site_weather` 仍带它**（demo-week = 1.0）—— 见
+  [agent-protocol.md](agent-protocol.md#两份视图candidate_tiles-与-candidates实测别混)。
+  **策略里不要写任何依赖该字段存在的代码，正式场景会 `KeyError`。**
+  于是「实现分 / 预览分」的比值（`tile_last_finished`，仅 v3）就是隔离仪器侧信号的唯一探针。
 
 ### 关键推论：档位是「什么时候拍」的结果，不是独立旋钮
 
@@ -93,7 +97,7 @@ bonus    = base × program_bonus[program]        # 仅当 program == band
 `cold_wave` 预报覆盖期间的读数必须丢弃。故障上报后 `end_overrides` 推到
 `as_of + repair_duration_days(2)`，并在 `response_latency_days(1)` 后公布。
 
-## 5. 时间预算：唯一的硬约束是全局墙钟
+## 5. 时间预算：唯一的硬约束是全局墙钟（但智能体被问的次数远少于时隙数）
 
 - **没有每次决策超时**（`per_decision_timeout = null`），**没有兜底合成动作**。
 - 只有 `global_wallclock_seconds`：dev-reference = 7200，finals-preview = 900，隐藏场景自己发布
@@ -101,6 +105,29 @@ bonus    = base × program_bonus[program]        # 仅当 program == band
 - **读快照不推进仿真时间，提交动作才推进。** 墙钟到点即杀，在途响应作废，
   未完成的 REQUIRED 每块 −1000。
 - 退出码：`survey_complete` / `global_wallclock_expired` → 0；`agent_error` / `agent_initialization_error` → 2。
+
+### 实测：真正的决策次数是个小数字
+
+`decisions.csv` 里绝大多数行不是智能体的选择：
+
+| 场景 | 行数（=时隙） | `observe` | `wait` | 其中 `no legal observable candidate can finish in its known window` |
+|---|---|---|---|---|
+| dev-reference | 7,943 | **91** | 7,852 | **7,852（全部）** |
+| demo-week | 299 | **52** | 247 | 247（全部） |
+
+`agent/decision_graph.py:_finalize` 在 `previews` 为空时**直接返回 wait，根本不调用
+`my_strategy.choose_action`**。所以：
+
+1. **`choose_action` 每场只被问 ~50–90 次**，只发生在「此刻确实拍得完某块天区」的机会上。
+   SKILL.md 让人按 `wallclock / 时隙数` 预算每次决策，那个分母**过于悲观**（它防的是每时隙重活）。
+   按 dev-reference 实测：527 s 基线开销 + 91 次咨询，7200 s 预算下**每次咨询还剩 ~6.6 s**，
+   所以「每次被问时调一次模型」在算术上是可行的 —— 但见 [agent-protocol.md](agent-protocol.md)
+   的守卫要求。
+2. **`avoidable_wait`（0.001/s）在这些场景里根本没被计费**：
+   `score_report.wait_seconds = {explicit: 7,052,700, unavailable: 7,052,700}` —— 两者相等，
+   说明所有等待都是「无可行动天区」的等待，不罚。
+   ⇒ **「拍还是等」不是每秒权衡，而是「这次机会给哪块天区」的稀疏分配问题。**
+   等待本身不花钱，花掉的是那个**只有 91 个的咨询名额**。
 
 ## 6. 两代规则并存 —— 先看 `schema_version`
 

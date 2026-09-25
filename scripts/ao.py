@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""astro_agent workspace driver · 本地运行 / 评分 / 对比 / 打包.
+"""astro_agent workspace driver · 本地运行 / 评分 / 对比 / 打包 / 提交.
 
-Subcommands: run · score · select · new · sweep · pack · results
+Subcommands: run · score · select · new · sweep · results · pack · submit
 
 The official starter kit lives in harness/ and is read-only. Everything here only
 calls into it; our code is agent/ (the submittable unit) and strategies/.
@@ -60,14 +60,23 @@ def _wallclock(name: str, override):
 
 
 def _strategy_file(name: str) -> Path:
+    """Resolve a strategy reference (bare name in strategies/, or any path) to an absolute file."""
     path = Path(name)
-    if not path.suffix:
+    if path.suffix != ".py":
         path = STRATEGY_DIR / f"{name}.py"
     if not path.is_absolute():
-        path = (ROOT / path) if not path.exists() else path
+        path = (ROOT / path)
+    path = path.resolve()
     if not path.is_file():
         _die(f"no strategy file for '{name}' (looked at {path})")
     return path
+
+
+def _rel(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def _strategy_name(path: Path) -> str:
@@ -160,7 +169,7 @@ def _sha(path: Path) -> str:
 
 def _promote(src: Path) -> None:
     shutil.copyfile(src, ACTIVE)
-    print(f"promoted {src.relative_to(ROOT)} -> {ACTIVE.relative_to(ROOT)} (strategy '{_strategy_name(src)}')")
+    print(f"promoted {_rel(src)} -> {_rel(ACTIVE)} (strategy '{_strategy_name(src)}')")
 
 
 def cmd_select(args) -> int:
@@ -248,6 +257,36 @@ def cmd_results(args) -> int:
     return 0
 
 
+def cmd_submit(args) -> int:
+    path = (ROOT / args.file).resolve()
+    if not path.is_file():
+        _die(f"--file must be a real file, e.g. runs/<id>/decisions.csv (got {args.file})")
+    report = _score_report(path.parent)
+    if report:
+        print(f"local score: {report['score']['total']:,.6f} ({report['termination_reason']})")
+    if args.kind == "results" and not args.scenario:
+        meta = path.parent / "meta.json"
+        if meta.exists():
+            args.scenario = json.loads(meta.read_text(encoding="utf-8"))["scenario"]
+            print(f"--scenario inferred from meta.json: {args.scenario}")
+        else:
+            _die("results submissions need --scenario matching the run (see runs/<id>/meta.json)")
+    if args.scenario:
+        _scenario_path(args.scenario)
+    # Credentials come from SAC_EMAIL / SAC_PASSWORD in the environment. They must never live in
+    # agent/.env: pack_agent.py ships that file inside the submission zip (pack_agent.py:80).
+    cmd = [str(HARNESS / "sac_submit.py"), "--kind", args.kind, "--file", str(path)]
+    if args.phase:
+        cmd += ["--phase", args.phase]
+    if args.scenario:
+        cmd += ["--scenario", args.scenario]
+    if args.title:
+        cmd += ["--title", args.title]
+    if args.wait:
+        cmd.append("--wait")
+    return _run_py(cmd)
+
+
 def cmd_pack(args) -> int:
     out = args.out or str(ROOT / "runs" / "agent.zip")
     return _run_py([str(HARNESS / "pack_agent.py"), "--agent", str(AGENT_DIR), "--out", out]
@@ -316,6 +355,15 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--out")
     k.add_argument("--no-env", dest="no_env", action="store_true")
     k.set_defaults(func=cmd_pack)
+
+    t = sub.add_parser("submit", help="upload a run's decisions.csv (or a packed agent) to the platform")
+    t.add_argument("--file", required=True, help="runs/<id>/decisions.csv or a packed zip/.py")
+    t.add_argument("--kind", choices=["results", "agent"], required=True)
+    t.add_argument("--phase", default="practice", help="phase slug shown on the site (default: practice)")
+    t.add_argument("--scenario", help="defaults to the scenario recorded in the run's meta.json")
+    t.add_argument("--title", default="")
+    t.add_argument("--wait", action="store_true", help="poll until the platform evaluation finishes")
+    t.set_defaults(func=cmd_submit)
     return p
 
 

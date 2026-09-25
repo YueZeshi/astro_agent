@@ -56,19 +56,39 @@ stderr 全部进 `runs/<id>/agent.log`，所有诊断写那里。**stdout 只准
 | `tile_last_finished` | **仅 v3**：`{tile_id, score}` 或 `null` |
 | `fault_status` | **仅 v3** |
 
-### 候选对象
+### 两份视图：`candidate_tiles` 与 `candidates`（实测，别混）
+
+`snapshot["candidate_tiles"]` 是**原始富视图**（10 个键）：
 
 ```
-tile_id, region_id, scheduling_class (REQUIRED|FLEXIBLE), nominal_exptime_seconds,
-tile_science_value, window_start_utc, window_end_utc,
+tile_id, region_id, scheduling_class, nominal_exptime_seconds, tile_science_value,
+window_start_utc, window_end_utc,
 geometry: {tile_id, timestamp_utc, altitude_deg, azimuth_deg, hour_angle_deg,
            airmass, moon_separation_deg, lunar_quality_factor},
-effective_weather: {tile_id, is_observable, seeing_arcsec, transparency, sky_quality, active_event_ids},
+effective_weather: {tile_id, slot_id, night_id, timestamp_utc, duration_seconds,
+                    is_observable, seeing_arcsec, transparency, sky_quality, active_event_ids},
 already_completed
 ```
 
-`challenge/challenge_workflow.py:_public_weather` **故意剥掉 `instrument_efficiency`**。
-`effective_weather` 同时被故障与抹平处理过。用 `实现分 / 预览分` 的比值反推仪器侧，是唯一的探针。
+而 `my_strategy.choose_action` 收到的 `candidates` 是**打分后的预览视图**，只有 13 个键，
+**恰好少了上面这 6 个**：`already_completed, effective_weather, geometry, tile_science_value,
+window_start_utc, window_end_utc`。
+
+> **所以要按「几何 / 窗口 / 已完成」做判断，必须自己用 `tile_id` 去
+> `snapshot["candidate_tiles"]` 里 join 回来。** 只看 `candidates` 会以为智能体不知道
+> 这块天区的窗口什么时候关 —— 它知道，只是不在那个列表里。
+
+`effective_weather` 与 `current_site_weather` **在 v3 里没有 `instrument_efficiency`**
+（`challenge/challenge_workflow.py:_public_weather` 剥掉的）。但**v2 练习场景的
+`current_site_weather` 带着它**（demo-week 实测 `instrument_efficiency = 1.0`）。
+⇒ 别写任何依赖该字段存在的逻辑，正式场景会直接 `KeyError`。
+实现分与预览分的比值（`tile_last_finished`，仅 v3）是隔离仪器侧的唯一探针。
+
+`weekly`（每 7 晚一次）实测含 **7 个 `night_id`、359 行 `tile_windows`**，每行带
+`best_time_utc / best_airmass / mean_airmass / mean_lunar_quality_factor /
+minimum_lunar_quality_factor` —— **「未来 7 晚每块天区什么时候条件最好」是公开可算的**，
+不是猜测。`night_start.tile_windows` 只含当晚。两者都要缓存进 `memory`，因为
+`weekly` 不是每晚都发。
 
 `my_strategy.py` 拿到的候选是扁平化的预览视图（`agent/scoring_preview.py`）：
 

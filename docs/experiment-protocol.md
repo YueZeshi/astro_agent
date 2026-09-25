@@ -79,7 +79,33 @@ greedy 在 7200 s 预算下复算出的 **12,287.478365** 与官方 `/brief` 公
 **这个数就是 P0 锚点**，之后每一次改动都跟它比。
 
 
-## 可复现性要求
+## 提交到平台
+
+```bash
+export SAC_EMAIL='you@example.org' SAC_PASSWORD='...'     # 只放环境，别放文件
+python scripts/ao.py submit --kind results --file runs/<id>/decisions.csv --wait
+# --scenario 省略时从该 run 的 meta.json 推断；平台要求与本地运行选同一个场景
+```
+
+底层是 `harness/sac_submit.py`。`SAC_URL` / `SAC_KEY` **不用设** —— 官方脚本里已经写死了
+默认值（`sac_submit.py:74-77`，就是 SKILL.md 那段 env 的内容）。只有 `SAC_EMAIL` /
+`SAC_PASSWORD` 是必须的，且只有这两个是凭据。
+
+> **凭据绝不能写进 `agent/.env`。** `pack_agent.py:80` 默认**把 `agent/.env` 打进提交 zip**
+> （那是给模型 key 用的，平台只让你的 agent 进程读到）。账号密码放那里等于直接寄给主办方。
+> 放 shell 环境变量，或 `agent/.env.sac` —— 后者被 `pack_agent.py:82` 排除在包外。
+
+限制：`decisions.csv` ≤ 20 MB；`dev-reference` 上限 10 次/天；`--kind agent` 走
+`python scripts/ao.py pack` 产出的 zip（≤ 20 MB，模型 ≤ 128K 上下文，每轮决策 ≤ 3 次调用）。
+
+**本机已验证到的位置**（2026-09-25）：封装层正确把请求交到 `sac_submit.py`，停在
+`--email (or SAC_EMAIL) is required` —— 没有提交任何东西。但同一时间
+`vdiemcofukuxglqsmlyz.supabase.co` 从本机**不可达**（`curl` 返回 000，Python 报
+`WinError 10054` 连接被强制重置），而 `create.gosim.org` 正常 200。
+所以 `fetch_scenario.py` 与 `sac_submit.py` 都需要一条能到 Supabase 主机的网络出口；
+命令行不通就退回网页上传 https://create.gosim.org/survey26/platform/compete ，
+上传同一个 `runs/<id>/decisions.csv`（先 `ao.py score --run runs/<id>` 复算过再传）。
+
 
 官方保证：同场景 + 同 `decisions.csv` ⇒ 本地与平台 `score_report.json` **完全一致**，
 `make_scenario.py` 生成的场景跨 OS 字节一致。所以我们任何「更好」的结论都必须可复算：

@@ -27,7 +27,8 @@
 - 上游更新时：重新解压覆盖 `harness/`，再检查 `agent/` 是否需要同步合约变更。
   下载入口见 [competition.md](../competition.md#官方入口)。
 - 例外：`make_scenario.py` 生成的自造场景也落在 `harness/scenarios/`（工具写死的相对布局），
-  但它们不属于 zip，用 `git status` 区分即可。
+  但它们不属于 zip，且能用 seed 一命令逐字节重建，所以 `.gitignore` 里用
+  `harness/scenarios/mine-*/` 排除，不入库。
 - **注意**：`harness/SKILL.md`、`fetch_scenario.py`、`sac_submit.py` 里含有主办方**公开发布**的
   Supabase anon key（`eyJhbGciOiJIUzI1NiIs…`，同一个值也出现在平台前端 bundle 里）。
   那不是密钥、不是我们的模型凭据，且逐字节只读要求我们不改它。安全扫描若报出来，

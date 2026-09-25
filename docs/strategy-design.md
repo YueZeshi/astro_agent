@@ -24,9 +24,45 @@ P0 锚点：`greedy`（官方默认，取 `candidates[0]`）在 `dev-reference` 
 时间也不是约束：全场 64 块天区共需 **60,300 s** 曝光，而场景给了 **7928 × 900 s ≈ 7.14 M s** 的夜时间
 （约 118 倍冗余）。稀缺的是**每块天区各自那几个合法窗口**。
 
-> **结论：`dev-reference` 上唯一的分数来源，是把每块天区拍在它自己窗口里质量最高的那个时刻。**
-> 覆盖、请求、罚分三项基线已经打满；「抢时间 / 排产顺序」类优化在这个场景上收益为 0。
-> `+4.9%` 是档位一项的上界 —— 剩余空间主要藏在 `base_science` 的 `A_used` 里。
+> **结论（仅限 180 夜的 dev-reference）：这个场景上唯一的分数来源，是把每块天区拍在它自己
+> 窗口里质量最高的那个时刻。** 覆盖、请求、罚分三项基线已经打满；「抢时间 / 排产顺序」类优化
+> 收益为 0，全部余量在 `base_science` + 档位（上界 **+4.9%**）。
+
+## 1b. 但这条结论不普适 —— 30 夜场景上基线立刻开始漏分区
+
+把同一个 greedy、同样 7200 s 墙钟放到自造的 30 夜场景 `mine-s7` 上：
+
+- total **4,483.429216**，完成 **52/64**，`flexible_shortfall` **700.00**
+  （`required_miss` 0、`request_miss` 0），且终止原因仍是 **`survey_complete`** ——
+  **不是墙钟到点，是每块天区的合法窗口在 30 夜里根本轮不到。**
+- 分区 FLEXIBLE 完成数：六个分区各 6 块，但 **R03 只 1 块、R04 整区 0 块**。
+  `flexible_quota_per_region = 4` ⇒ R03 缺 3、R04 缺 4，7 × 100 = 700。
+
+greedy 按 `estimated_gain_per_second` 逐时隙取最优，**完全不看分区配额**，于是时间余量一低
+就有整块分区被饿死。所以：
+
+| | dev-reference (180 夜) | mine-s7 (30 夜) |
+|---|---|---|
+| 时隙数 | 7,928 | 1,181 |
+| **`choose_action` 实际被问次数** | **91** | **50** |
+| 其中缺口分区在候选板上的次数 | — | **7**（另 43 次根本不在） |
+| 主战场 | `base_science` 挑时刻 | 同样是挑时刻 —— 配额缺口抢不回来 |
+
+**但「靠优先补配额抢回那 700 分」这条已被实测否证。** 诊断（`analysis/diag_quota.py`）显示
+R03/R04 只在 50 次咨询里的 7 次出现在候选板上 —— `_finalize` 在「没有拍得完的候选」时直接
+返回 wait，**压根不问策略**。贪心在这 7 次里已经取了 3 次。缺口的成因是**合法窗口稀缺**，
+不是优先级排错。把 `quota-floor` 真装上以后：`mine-s7` **−1.77**、`demo-week` **+24.64**，
+而两个场景的 `tiles` 与罚分**都没变** —— 它只是在换天区，不是在补配额。
+
+⇒ 问题的真实形状：**每场只有 ~50–90 个「现在确实拍得完」的机会**，决策是把这几十个名额
+分给谁。等待不花钱（`avoidable_wait` 在实测里从未计费，见
+[scoring.md §5](scoring.md#实测真正的决策次数是个小数字)），花钱的是**名额**。
+`terminal_penalty_avoidance`（FLEXIBLE = 100）**已经在平台的 `estimated_total_gain` 里**，
+所以再按配额插队等于把同一笔钱算两遍，必然掉分。
+
+**隐藏场景的 `days` / `n_slots` / 墙钟都不公开**，而咨询次数随场景变化 —— 所以
+「按剩余夜数 pacing」这类规则不可实现（快照里没有总夜数），任何预算判断只能用
+**自己能量到的墙钟消耗比例**。
 
 ## 2. 质量的杠杆有多长
 
@@ -66,15 +102,19 @@ A_used = eff × transparency × sky_quality / (seeing × airmass)  × lunar_qual
 所以**它在 dev-reference 上实测只能和贪心基线打平**。要打穿，就得把「等」建立在对预报的
 量化判断上，而不是关掉它。
 
-## 4. 真正没被榨干的信号：7 天预报
+## 4. 真正没被榨干的信号：7 晚窗口表 + 7 天预报
 
-`weekly.weather_forecast` 每 7 晚一次，带 `revision`（每日修订）、`probability`、
-`start/end_uncertainty_seconds`，**漏检率 12%、6 个假阳性**。这是策略里唯一有信息量、
-又没有被基线利用的东西：基线完全不看预报。
+实测（`analysis/probe_strategy.py`，见 [agent-protocol.md](agent-protocol.md)）：基线完全没用
+两份**已经公开发给它**的数据：
 
-一个可量化的收益形式：某块天区未来 7 晚的窗口里，如果预报显示后两晚 `cloudy` 概率 0.8，
-今晚质量 0.55（BRIGHT），那么「今晚拍」的期望明显高于「赌后两晚」。反之亦然。
-**这是决策问题，不是打分问题** —— 需要把预报的 `spatial_scope_payload` 投影到候选天区上。
+1. **`weekly.tile_windows`：未来 7 个夜晚、359 行，每行带 `best_time_utc`、`best_airmass`、
+   `mean_lunar_quality_factor`。** 也就是说「某块天区接下来哪天几点条件最好」是**公开可算的**，
+   不需要预测。这一份直接支撑第 1 节的 `base_science` 余量。
+2. **`weekly.weather_forecast`**：带 `revision`（每日修订）、`probability`、
+   `start/end_uncertainty_seconds`，**漏检率 12%、6 个假阳性**。这是唯一需要概率化使用的部分。
+
+两者都要缓存进 `memory` —— `weekly` 每 7 晚才发一次，不是每晚都发。
+`night_start.tile_windows` 只有当晚，`weekly.tile_windows` 才有 7 晚跨度。
 
 注意 `cold_wave`：预报里有 `cold_wave` 覆盖的时隙，观测读数不可信
 （`anomaly_detection.py` 明确要求丢弃），正式赛里会影响上报判据。
@@ -109,6 +149,13 @@ A_used = eff × transparency × sky_quality / (seeing × airmass)  × lunar_qual
 | A3 | v3 上「保底 + 刷分」两轮打法优于单轮 | 在 finals-preview + 自造 v3 场景跑 | 低：v2 上必须关掉 |
 | A4 | 墙钟比例控制器（剩余预算 / 剩余必需曝光）能防崩 | 扫 `--wallclock` 从 900 到 7200 | 低 |
 | A5 | LLM 只在预报解读上有增益 | 对照 `MODEL_PROVIDER=deterministic` | 高：延迟与 3 次/轮上限 |
+| ~~A6~~ | ~~分区配额兜底~~ | **已否证**：`quota-floor` 在 mine-s7 −1.77、demo-week +24.64，两场景罚分与完成块数均未变。缺口来自合法窗口稀缺（缺口分区只在 7/50 次咨询里出现在候选板上），不是排序 | — |
+
+A6 的否证顺带产出 A7 —— **它才是真正的结构性发现**：
+
+| # | 假设 | 验证方法 | 风险 |
+|---|---|---|---|
+| A7 | 每场只有 ~50–91 次真实咨询，所以「每次咨询调一次模型」在 7200 s 预算下可负担（527 s 基线开销，剩 ~6.6 s/次） | 加一个每次咨询调模型的分支，测 `accounted_wallclock_seconds` 与 `global_wallclock_expired` | 隐藏场景墙钟与咨询次数都不公开 ⇒ **必须带墙钟守卫**，预算吃紧即降级为确定性 |
 
 A1 优先 —— 它决定后面所有值不值得做。**全知上界必须在离线分析里算，绝不能在策略里读。**
 运行时读 `weather.csv` 是违规（[competition.md § 红线](competition.md#红线来自规则页与-skillmd)）。

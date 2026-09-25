@@ -26,9 +26,12 @@
 - `memory` 是每次运行的空 dict，是唯一跨决策存活的东西；不要依赖模块级全局（进程可能被复用）。
 - 抛异常或返回非法候选会**静默退回默认排序**，分数看着正常但策略其实没生效。
   每次跑完 grep `runs/<id>/agent.log` 里的 `could not be imported` / `raised` / `not legal now`。
-- 评分常数（1000 / 190 / 140 / 100 / 0.65 / 0.40 / 0.35 …）从
-  `initialize.scoring_contract.score_config` 读；墙钟从 `initialize.global_wallclock_seconds` 读。
-  **不要硬编码**，隐藏场景会换。
+- 评分常数从 `snapshot["score_config"]` / `snapshot["scoring_contract"]` 读 —— 官方
+  `decision_graph.py:199-201` 会把它们注入快照。**但墙钟不在快照里**：`initialize` 的
+  `global_wallclock_seconds` 不会传给 `choose_action`，要用 `os.environ["SAC_WALLCLOCK_SECONDS"]`。
+  硬编码 1000/140/0.65 会在隐藏场景改数时静默失效。
+- 快照里**没有总夜数 / 总时隙数**（`cursor` 只给当前 `night_id`，`night_start.night` 只给今晚）。
+  所以「按剩余夜数 pacing」这类规则**无法实现**；预算判断只能靠自己量的墙钟消耗比例。
 - 规则有两代。先读 `snapshot.schema_version`（v3 = 正式：重复观测合法、可上报、有覆盖奖励；
   v2 = 练习：重复观测 `duplicate_tile` −100、上报 `unknown_action`）。见
   [ADR 0002](docs/decisions/0002-target-the-v3-rules-not-just-dev-reference.md)。
@@ -55,9 +58,18 @@ python harness/make_scenario.py --out harness/scenarios/<name> --seed <n> --days
 
 ## 已知的直觉陷阱
 
-- 「天况不好就等」实测 **−1,700**。正确形态是带截止时间的可选延迟，不是阈值停拍。
-- 时间在这个场景**极度过剩**（60,300 s 需求 vs 7.14 M s 可用），稀缺的是每块天区的合法窗口。
-  所以「排产顺序 / 抢时间」类优化收益为 0，全部余量在「同一块天区挑最好的时刻」。
+- **`choose_action` 每场只被问 ~50–91 次，不是每个时隙一次。** `_finalize` 在没有「拍得完」的候选时
+  直接返回 wait，根本不调用策略（dev-reference：7,943 时隙 / 91 次咨询）。所以问题是
+  **「把这几十个名额分给谁」**，不是「每个时隙干什么」。写规则前先想这条。
+- **等待不花钱**：实测 `wait_seconds.explicit == wait_seconds.unavailable`，`avoidable_wait`
+  从未计费。花掉的是咨询名额本身。
+- 「时间过剩、覆盖与罚分已打满」**只是 180 夜 dev-reference 的局部事实**：30 夜的 `mine-s7` 上
+  同一个 greedy 只完成 52/64、吃 700 分 `flexible_shortfall`（R04 整区 0 块），终止原因仍是
+  `survey_complete` —— 窗口轮不到，不是墙钟到点。**但那 700 分抢不到**：`quota-floor` 实测
+  mine-s7 −1.77 / demo-week +24.64，块数与罚分都没变，因为缺口分区只在 50 次咨询里的 **7 次**
+  上过板。别再加「优先补配额」类规则 —— `terminal_penalty_avoidance` 已在平台的
+  `estimated_total_gain` 里，插队等于同一笔钱算两遍。
+- 「天况不好就等」实测 **−1,700**（官方）。正确形态是带截止时间的可选延迟，不是阈值停拍。
 - `coverage_bonus` 与 `report_reward` 在 dev-reference 上**恒为 0 / 非法**，别对着它们调参。
 - 候选的 `program` 已由质量自动定档，**别改**；填错反而丢加成。
 
